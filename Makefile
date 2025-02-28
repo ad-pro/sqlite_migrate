@@ -49,6 +49,9 @@ unset_dirty = \
 format_version = \
 	$(SQL_CMD) "SELECT FORMAT('%05u', version) FROM schema_migrations;"
 
+format_version_new= \
+	$(SQL_CMD) "SELECT FORMAT('%05u', $(1));"
+
 #############################
 # Targets
 #############################
@@ -70,15 +73,10 @@ format_version = \
 
 all:: help
 
-## Create a new migration file: NAME=migration_name
-migrate/create::
-	@res=$$($(call format_version)); \
-	touch "$(MIGRATIONS_PATH)/$${res}_$(NAME).up.sql"; \
-	touch "$(MIGRATIONS_PATH)/$${res}_$(NAME).down.sql"; \
-
 ## Initialize the database: [DB_FILE=database_file]
 create/db::
 	@echo "Creating database: $(DB_FILE)"
+	mkdir -p $(DB_PATH)
 	@$(SQL_CMD) "CREATE TABLE IF NOT EXISTS schema_migrations (version UINT64, dirty BOOL);"
 	@$(SQL_CMD) "CREATE UNIQUE INDEX IF NOT EXISTS schema_migrations_version_u ON schema_migrations (version);"
 	@$(SQL_CMD) "INSERT INTO schema_migrations (version, dirty) VALUES (0, 0);"
@@ -103,6 +101,32 @@ migrate/ls::
 ## Print current migration version
 migrate/version::
 	@$(call get_version)
+
+.ONSESHELL:
+## Create a new migration file: NAME=migration_name
+migrate/create::
+	@mkdir -p $(MIGRATIONS_PATH)
+	db_version=$$($(call format_version))
+	max_version=$$db_version
+	temp_file=$$(mktemp)
+	trap 'rm -f "$$temp_file"' EXIT
+	echo "$$max_version" > "$$temp_file"
+	# Find existing migration files and write to
+	find $(MIGRATIONS_PATH) -type f -name "*up.sql" | sort |
+	while read -r file; do
+		file_version=$$(basename "$$file" | grep -Eo '^[0-9]+')
+		# Convert file_version to an integer for comparison
+		if [ "$$file_version" -ge "$$max_version" ]; then
+			max_version=$$file_version
+			echo $$max_version > "$$temp_file"
+		fi
+	done
+	max_version=$$(cat $${temp_file})
+	next_version=$$($(call format_version_new, $$((max_version +1))))
+	touch "$(MIGRATIONS_PATH)/$${next_version}_$(NAME).up.sql"
+	touch "$(MIGRATIONS_PATH)/$${next_version}_$(NAME).down.sql"
+	echo "Migration files are created. Migration Version: $$next_version"
+
 
 ## Force migration version without execution: DB_VERSION=X
 migrate/force::
